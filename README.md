@@ -23,7 +23,6 @@ Por defecto:
 - scrapea Peru, no extranjero
 - usa `--max-level provincia`
 - usa `--foreign-fallback none`
-- corre bootstrap con 5000 simulaciones
 
 ## Uso local
 
@@ -69,7 +68,6 @@ El dashboard muestra:
 - actas pendientes y actas enviadas JEE
 - top 20 provincias con mas votos faltantes estimados
 - tabla por departamento
-- proyeccion alternativa con bootstrap
 - metodologia simple y disclaimer
 
 Tambien muestra una nota visible: no se incluyen votos del extranjero por
@@ -84,10 +82,6 @@ al mismo ritmo en todo el pais. Miramos provincia por provincia.
 Para las actas faltantes de una provincia, asumimos que se parecen a las actas
 ya contabilizadas en esa misma provincia. Si una provincia aun no tiene datos
 suficientes, usamos un nivel mas agregado como respaldo.
-
-El bootstrap es una proyeccion alternativa: simula miles de escenarios donde las
-actas faltantes pueden moverse un poco alrededor del patron observado. No
-predice el futuro; muestra que tan sensible es la proyeccion.
 
 Esto no es resultado oficial, no reemplaza a ONPE y no es recomendacion de
 apuestas.
@@ -132,6 +126,26 @@ En GitHub:
 5. Ejecuta manualmente `Update dashboard` o espera el cron.
 
 No necesitas configurar secrets.
+
+### Si el cron no corre cada 10 minutos
+
+El archivo ya usa:
+
+```yaml
+cron: "*/10 * * * *"
+```
+
+Pero GitHub Actions no garantiza ejecuciones exactas cada 10 minutos. Si ves
+pocas corridas:
+
+- confirma que el workflow ya esta commiteado en la rama default (`main`)
+- confirma que `Settings > Actions` permite workflows
+- confirma que `Settings > Pages > Source` esta en `GitHub Actions`
+- espera unos minutos despues del primer commit del workflow
+- usa `workflow_dispatch` para una corrida manual mientras GitHub activa el cron
+
+GitHub puede retrasar o saltarse schedules cuando hay alta carga. El dashboard
+mantiene publicado el ultimo deploy exitoso.
 
 ## Endpoints ONPE
 

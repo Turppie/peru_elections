@@ -18,7 +18,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from onpe_client import BASE_URL, ONPEClient, ONPEClientError
-from projection import bootstrap_projection, project_results
+from projection import project_results
 from scraper import scrape_geography
 
 LOGGER = logging.getLogger(__name__)
@@ -48,12 +48,6 @@ def main() -> None:
         choices=["none", "national", "manual"],
         default="none",
         help="Fallback policy for foreign rows with zero counted actas",
-    )
-    parser.add_argument(
-        "--bootstrap-sims",
-        type=int,
-        default=5000,
-        help="Number of bootstrap simulations; use 0 to skip",
     )
     parser.add_argument(
         "--include-foreign",
@@ -112,7 +106,6 @@ def main() -> None:
         max_level=args.max_level,
         include_foreign=args.include_foreign,
         foreign_fallback=args.foreign_fallback,
-        bootstrap_sims=args.bootstrap_sims,
     )
 
 
@@ -123,7 +116,6 @@ def build_site(
     max_level: str,
     include_foreign: bool,
     foreign_fallback: str,
-    bootstrap_sims: int,
 ) -> dict[str, Any]:
     """Write latest CSV, latest JSON, and index HTML to ``output_dir``."""
 
@@ -137,28 +129,15 @@ def build_site(
         foreign_fallback=foreign_fallback,
         print_output=False,
     )
-    bootstrap = (
-        bootstrap_projection(
-            df,
-            n_sim=bootstrap_sims,
-            include_foreign=include_foreign,
-            foreign_fallback=foreign_fallback,
-        )
-        if bootstrap_sims > 0
-        else None
-    )
-
     latest_csv = data_dir / "latest.csv"
     df.to_csv(latest_csv, index=False)
 
     payload = build_payload(
         df=df,
         projection=projection,
-        bootstrap=bootstrap,
         max_level=max_level,
         include_foreign=include_foreign,
         foreign_fallback=foreign_fallback,
-        bootstrap_sims=bootstrap_sims,
     )
 
     latest_json = data_dir / "latest.json"
@@ -180,11 +159,9 @@ def build_payload(
     *,
     df: pd.DataFrame,
     projection: dict[str, Any],
-    bootstrap: dict[str, Any] | None,
     max_level: str,
     include_foreign: bool,
     foreign_fallback: str,
-    bootstrap_sims: int,
 ) -> dict[str, Any]:
     """Build a JSON-serializable dashboard payload."""
 
@@ -229,7 +206,6 @@ def build_payload(
             "max_level": max_level,
             "include_foreign": include_foreign,
             "foreign_fallback": foreign_fallback,
-            "bootstrap_sims": bootstrap_sims,
             "latest_csv": "data/latest.csv",
             "latest_json": "data/latest.json",
             "foreign_note": _foreign_note(include_foreign, df),
@@ -240,7 +216,6 @@ def build_payload(
             for key, value in projection.items()
             if key not in {"top_missing_units", "projection_units"}
         },
-        "bootstrap": bootstrap,
         "top_missing_provinces": _top_missing_records(projection),
         "department_table": _department_records(df),
         "methodology": {
@@ -250,7 +225,7 @@ def build_payload(
                 "Miramos provincia por provincia porque las actas no llegan al mismo ritmo en todo el país.",
                 "Para las actas faltantes de una provincia, asumimos que se parecen a las actas ya contabilizadas en esa misma provincia.",
                 "Si una provincia aún no tiene datos suficientes, usamos un nivel más agregado como respaldo.",
-                "El bootstrap no predice el futuro: muestra qué tan sensible es la proyección si lo que falta se mueve un poco.",
+                "Las actas enviadas al JEE o pendientes pueden cambiar el resultado cuando se resuelvan.",
             ],
         },
         "disclaimer": (
@@ -326,7 +301,14 @@ def render_html(payload: dict[str, Any]) -> str:
       padding: 14px 16px;
       border-radius: 12px;
     }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
+    .table-scroll {{
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }}
+    table {{ width: 100%; min-width: 720px; border-collapse: collapse; font-size: 14px; }}
     th, td {{ padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: right; }}
     th:first-child, td:first-child {{ text-align: left; }}
     th {{ color: var(--muted); font-weight: 700; }}
@@ -338,7 +320,14 @@ def render_html(payload: dict[str, Any]) -> str:
       .two-col {{ grid-template-columns: 1fr; }}
     }}
     @media (max-width: 560px) {{
+      header {{ padding: 24px 16px; }}
+      main {{ padding: 18px 12px 36px; }}
       .grid {{ grid-template-columns: 1fr; }}
+      .card {{ padding: 14px; border-radius: 14px; }}
+      .metric-value {{ font-size: 22px; }}
+      .plot {{ min-height: 300px; }}
+      table {{ min-width: 680px; font-size: 13px; }}
+      th, td {{ padding: 9px 7px; }}
     }}
   </style>
 </head>
@@ -365,12 +354,6 @@ def render_html(payload: dict[str, Any]) -> str:
         <p><strong>Próxima actualización aproximada:</strong> <span id="countdown"></span></p>
         <div class="warning" id="foreign-note"></div>
       </div>
-    </section>
-
-    <section class="section card">
-      <h2>Proyección alternativa: simulación bootstrap</h2>
-      <p class="muted">Simulamos miles de escenarios donde las actas faltantes pueden moverse un poco alrededor del patrón observado.</p>
-      <div class="grid" id="bootstrap-metrics"></div>
     </section>
 
     <section class="section card">
@@ -441,31 +424,19 @@ def render_html(payload: dict[str, Any]) -> str:
       ], {{ barmode: "group", margin: {{ t: 20, r: 10, b: 50, l: 70 }} }}, {{ responsive: true, displayModeBar: false }});
     }}
 
-    function renderBootstrap() {{
-      const b = DATA.bootstrap;
-      if (!b) {{
-        document.getElementById("bootstrap-metrics").innerHTML = metric("Bootstrap", "No ejecutado", "");
-        return;
-      }}
-      document.getElementById("bootstrap-metrics").innerHTML = [
-        metric("Prob. Keiko", fmtPct(b.probability_keiko_wins * 100), "simulación"),
-        metric("Prob. Sánchez", fmtPct(b.probability_sanchez_wins * 100), "simulación"),
-        metric("Margen mediano", fmtMargin(b.margin_p50), "p50"),
-        metric("Rango probable", `${{fmtMargin(b.margin_p2_5)}} a ${{fmtMargin(b.margin_p97_5)}}`, "p2.5 a p97.5"),
-      ].join("");
-    }}
-
     function renderMissing() {{
       const rows = DATA.top_missing_provinces || [];
+      const isMobile = window.innerWidth < 640;
       Plotly.newPlot("missing-chart", [{{
         x: rows.map(r => r.missing_valid_votes_est),
-        y: rows.map(r => `${{r.provincia_nombre || ""}}, ${{r.departamento_nombre || ""}}`),
+        y: rows.map(r => isMobile ? (r.provincia_nombre || "") : `${{r.provincia_nombre || ""}}, ${{r.departamento_nombre || ""}}`),
         type: "bar",
         orientation: "h",
         marker: {{ color: "#0f766e" }}
       }}], {{
-        margin: {{ t: 10, r: 20, b: 50, l: 180 }},
-        yaxis: {{ autorange: "reversed" }}
+        height: Math.max(320, rows.length * (isMobile ? 25 : 28)),
+        margin: {{ t: 10, r: 14, b: 48, l: isMobile ? 100 : 180 }},
+        yaxis: {{ autorange: "reversed", automargin: true }}
       }}, {{ responsive: true, displayModeBar: false }});
       document.getElementById("top-table").innerHTML = renderTable(rows, [
         ["Provincia", r => r.provincia_nombre],
@@ -490,7 +461,7 @@ def render_html(payload: dict[str, Any]) -> str:
     function renderTable(rows, columns) {{
       const head = `<thead><tr>${{columns.map(([name]) => `<th>${{name}}</th>`).join("")}}</tr></thead>`;
       const body = `<tbody>${{rows.map(row => `<tr>${{columns.map(([, fn]) => `<td>${{fn(row) ?? "—"}}</td>`).join("")}}</tr>`).join("")}}</tbody>`;
-      return `<table>${{head}}${{body}}</table>`;
+      return `<div class="table-scroll"><table>${{head}}${{body}}</table></div>`;
     }}
 
     function renderText() {{
@@ -521,7 +492,6 @@ def render_html(payload: dict[str, Any]) -> str:
 
     renderMetrics();
     renderVotesChart();
-    renderBootstrap();
     renderMissing();
     renderDepartments();
     renderText();

@@ -10,46 +10,27 @@ class BuildSiteTest(unittest.TestCase):
     def test_payload_is_json_serializable_without_nan(self):
         df = _fixture_df()
         projection = _fixture_projection()
-        bootstrap = {
-            "probability_keiko_wins": 0.65,
-            "probability_sanchez_wins": 0.35,
-            "probability_tie": 0.0,
-            "margin_p2_5": -100.0,
-            "margin_p50": -50.0,
-            "margin_p97_5": 20.0,
-        }
 
         payload = build_payload(
             df=df,
             projection=projection,
-            bootstrap=bootstrap,
             max_level="provincia",
             include_foreign=False,
             foreign_fallback="none",
-            bootstrap_sims=5000,
         )
 
         encoded = json.dumps(payload, allow_nan=False)
-        self.assertIn("probability_keiko_wins", encoded)
-        self.assertEqual(payload["bootstrap"]["margin_p50"], -50.0)
+        self.assertIn("projected_keiko_votes", encoded)
+        self.assertNotIn("bootstrap", payload)
         self.assertEqual(len(payload["department_table"]), 1)
 
     def test_html_contains_dashboard_copy_and_assets(self):
         payload = build_payload(
             df=_fixture_df(),
             projection=_fixture_projection(),
-            bootstrap={
-                "probability_keiko_wins": 0.65,
-                "probability_sanchez_wins": 0.35,
-                "probability_tie": 0.0,
-                "margin_p2_5": -100.0,
-                "margin_p50": -50.0,
-                "margin_p97_5": 20.0,
-            },
             max_level="provincia",
             include_foreign=False,
             foreign_fallback="none",
-            bootstrap_sims=5000,
         )
 
         html = render_html(payload)
@@ -60,6 +41,8 @@ class BuildSiteTest(unittest.TestCase):
         self.assertIn("Metodología en simple", html)
         self.assertIn("no es resultado oficial", html)
         self.assertIn("No se incluyen votos del extranjero", html)
+        self.assertIn("table-scroll", html)
+        self.assertNotIn("simulación bootstrap", html)
 
 
 def _fixture_df():
