@@ -1,0 +1,13 @@
+/.venv
+/onpe_responses
+
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+/data/*.csv
+!/data/.gitkeep
+/raw/*.json
+!/raw/.gitkeep
