@@ -179,6 +179,7 @@ def scrape_geography(
     include_peru: bool = True,
     include_foreign: bool = True,
     max_level: str = "distrito",
+    foreign_max_level: str | None = None,
     output_dir: str | Path = "data",
     save_snapshot: bool = True,
 ) -> pd.DataFrame:
@@ -186,6 +187,10 @@ def scrape_geography(
 
     if max_level not in MAX_LEVELS:
         raise ValueError("max_level must be one of: departamento, provincia, distrito")
+    if foreign_max_level is not None and foreign_max_level not in MAX_LEVELS:
+        raise ValueError(
+            "foreign_max_level must be one of: departamento, provincia, distrito"
+        )
 
     client = client or ONPEClient()
     client.check_api_available()
@@ -209,6 +214,9 @@ def scrape_geography(
 
     for ambito_id in ambitos_to_scrape:
         ambito_nombre = AMBITOS.get(ambito_id, str(ambito_id))
+        scope_max_level = (
+            foreign_max_level if ambito_id == 2 and foreign_max_level else max_level
+        )
         LOGGER.info("Scraping ambito %s %s", ambito_id, ambito_nombre)
         rows.append(
             _summary_row(
@@ -238,7 +246,7 @@ def scrape_geography(
                 )
             )
 
-            if MAX_LEVELS[max_level] < 2:
+            if MAX_LEVELS[scope_max_level] < 2:
                 continue
 
             provincias = client.get_provincias(ambito_id, dep)
@@ -262,7 +270,7 @@ def scrape_geography(
                     )
                 )
 
-                if MAX_LEVELS[max_level] < 3:
+                if MAX_LEVELS[scope_max_level] < 3:
                     continue
 
                 distritos = client.get_distritos(ambito_id, prov)

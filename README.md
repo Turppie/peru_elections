@@ -20,7 +20,7 @@ python src/build_site.py
 
 Por defecto:
 
-- scrapea Peru, no extranjero
+- scrapea Peru; el workflow publicado también incluye extranjero
 - usa `--max-level provincia`
 - usa `--foreign-fallback none`
 
@@ -41,7 +41,7 @@ Si tu shell no tiene `python`, usa `python3` o el ejecutable del entorno virtual
 Construir el dashboard:
 
 ```bash
-.venv/bin/python src/build_site.py --max-level provincia --output-dir site --foreign-fallback none
+.venv/bin/python src/build_site.py --max-level provincia --output-dir site --include-foreign --foreign-fallback continent
 ```
 
 Si ONPE/CloudFront devuelve HTML en vez de JSON durante un scrape largo, sube
@@ -68,11 +68,14 @@ El dashboard muestra:
 - actas pendientes y actas enviadas JEE
 - top 20 provincias con mas votos faltantes estimados
 - tabla por departamento
+- sección de voto extranjero por continente y país
 - metodologia simple y disclaimer
 
-Tambien muestra una nota visible: no se incluyen votos del extranjero por
-defecto porque sus actas aun no han sido contabilizadas; el modelo no inventa
-votos para ese ambito.
+El voto extranjero se incluye de forma conservadora. Cada país usa primero sus
+propios resultados. Si un país sigue en cero, solo usa el patrón de su
+continente cuando ese continente tiene al menos 10 actas contabilizadas y datos
+de 2 países. Las actas de continentes sin señal suficiente quedan explícitamente
+sin proyectar.
 
 ## Metodologia en simple
 
@@ -82,6 +85,9 @@ al mismo ritmo en todo el pais. Miramos provincia por provincia.
 Para las actas faltantes de una provincia, asumimos que se parecen a las actas
 ya contabilizadas en esa misma provincia. Si una provincia aun no tiene datos
 suficientes, usamos un nivel mas agregado como respaldo.
+
+En extranjero miramos país por país. Nunca usamos el patrón nacional de Perú
+para inventar votos extranjeros. El dashboard periódico no baja a ciudades.
 
 Esto no es resultado oficial, no reemplaza a ONPE y no es recomendacion de
 apuestas.
@@ -96,7 +102,7 @@ El workflow esta en:
 
 Corre:
 
-- cada 10 minutos con `cron: "*/10 * * * *"`
+- cada 10 minutos, desplazado al minuto 7, con `cron: "7-59/10 * * * *"`
 - manualmente con `workflow_dispatch`
 
 El workflow:
@@ -106,7 +112,7 @@ El workflow:
 3. ejecuta:
 
 ```bash
-python src/build_site.py --max-level provincia --output-dir site --foreign-fallback none
+python src/build_site.py --max-level provincia --output-dir site --include-foreign --foreign-fallback continent
 ```
 
 4. despliega `site/` con:

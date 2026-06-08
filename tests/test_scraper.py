@@ -1,6 +1,6 @@
 import unittest
 
-from scraper import build_resumen_params, parse_participantes
+from scraper import build_resumen_params, parse_participantes, scrape_geography
 
 
 class BuildResumenParamsTest(unittest.TestCase):
@@ -101,6 +101,54 @@ class ParseParticipantesTest(unittest.TestCase):
 
         self.assertIsNone(result["keiko_votes"])
         self.assertEqual(result["sanchez_votes"], 100.0)
+
+
+class ScrapeGeographyTest(unittest.TestCase):
+    def test_foreign_max_level_stops_at_country(self):
+        client = _FakeClient()
+
+        df = scrape_geography(
+            client=client,
+            include_peru=False,
+            include_foreign=True,
+            max_level="distrito",
+            foreign_max_level="provincia",
+            save_snapshot=False,
+        )
+
+        self.assertIn("provincia", df["nivel"].tolist())
+        self.assertNotIn("distrito", df["nivel"].tolist())
+        self.assertEqual(client.district_calls, 0)
+
+
+class _FakeClient:
+    def __init__(self):
+        self.district_calls = 0
+
+    def check_api_available(self):
+        return None
+
+    def get_departamentos(self, _ambito):
+        return [{"ubigeo": "920000", "nombre": "AMÉRICA"}]
+
+    def get_provincias(self, _ambito, _dep):
+        return [{"ubigeo": "920100", "nombre": "MEXICO"}]
+
+    def get_distritos(self, _ambito, _prov):
+        self.district_calls += 1
+        return [{"ubigeo": "920101", "nombre": "CIUDAD DE MEXICO"}]
+
+    def get_totales(self, _params):
+        return {
+            "actasContabilizadas": 0,
+            "contabilizadas": 0,
+            "totalActas": 1,
+            "totalVotosEmitidos": 0,
+            "totalVotosValidos": 0,
+        }
+
+    def get_participantes(self, _params):
+        return []
 
 
 if __name__ == "__main__":

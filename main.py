@@ -64,9 +64,21 @@ def main() -> None:
     )
     parser.add_argument(
         "--foreign-fallback",
-        choices=["none", "national", "manual"],
+        choices=["none", "continent", "national", "manual"],
         default="none",
         help="Fallback policy for foreign rows with zero counted actas",
+    )
+    parser.add_argument(
+        "--foreign-continent-min-actas",
+        type=int,
+        default=10,
+        help="Minimum counted actas required for continent fallback",
+    )
+    parser.add_argument(
+        "--foreign-continent-min-countries",
+        type=int,
+        default=2,
+        help="Minimum countries with data required for continent fallback",
     )
     parser.add_argument(
         "--log-level",
@@ -94,6 +106,7 @@ def main() -> None:
                 include_peru=True,
                 include_foreign=args.include_foreign,
                 max_level=args.max_level,
+                foreign_max_level="provincia",
             )
         except ONPEClientError as exc:
             raise SystemExit(f"ONPE API error: {exc}") from None
@@ -117,6 +130,8 @@ def main() -> None:
             df,
             include_foreign=True,
             foreign_fallback=args.foreign_fallback,
+            foreign_continent_min_actas=args.foreign_continent_min_actas,
+            foreign_continent_min_countries=args.foreign_continent_min_countries,
         )
         if args.bootstrap:
             bootstrap = bootstrap_projection(
@@ -124,6 +139,8 @@ def main() -> None:
                 n_sim=args.bootstrap,
                 include_foreign=True,
                 foreign_fallback=args.foreign_fallback,
+                foreign_continent_min_actas=args.foreign_continent_min_actas,
+                foreign_continent_min_countries=args.foreign_continent_min_countries,
             )
             print("Bootstrap summary:")
             pprint(bootstrap)

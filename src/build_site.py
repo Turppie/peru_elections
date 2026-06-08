@@ -25,8 +25,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 FOREIGN_NOTE_DEFAULT = (
-    "No se incluyen votos del extranjero en la proyección porque sus actas aún "
-    "no han sido contabilizadas; el modelo no inventa votos para ese ámbito."
+    "El voto extranjero no está incluido en esta publicación. Al activarlo, el "
+    "modelo puede usar una política continental conservadora."
 )
 
 
@@ -45,9 +45,21 @@ def main() -> None:
     )
     parser.add_argument(
         "--foreign-fallback",
-        choices=["none", "national", "manual"],
+        choices=["none", "continent", "national", "manual"],
         default="none",
         help="Fallback policy for foreign rows with zero counted actas",
+    )
+    parser.add_argument(
+        "--foreign-continent-min-actas",
+        type=int,
+        default=10,
+        help="Minimum counted actas required to use a continent fallback",
+    )
+    parser.add_argument(
+        "--foreign-continent-min-countries",
+        type=int,
+        default=2,
+        help="Minimum countries with data required to use a continent fallback",
     )
     parser.add_argument(
         "--include-foreign",
@@ -95,6 +107,7 @@ def main() -> None:
             include_peru=True,
             include_foreign=args.include_foreign,
             max_level=args.max_level,
+            foreign_max_level="provincia",
             save_snapshot=False,
         )
     except ONPEClientError as exc:
@@ -106,6 +119,8 @@ def main() -> None:
         max_level=args.max_level,
         include_foreign=args.include_foreign,
         foreign_fallback=args.foreign_fallback,
+        foreign_continent_min_actas=args.foreign_continent_min_actas,
+        foreign_continent_min_countries=args.foreign_continent_min_countries,
     )
 
 
@@ -116,6 +131,8 @@ def build_site(
     max_level: str,
     include_foreign: bool,
     foreign_fallback: str,
+    foreign_continent_min_actas: int = 10,
+    foreign_continent_min_countries: int = 2,
 ) -> dict[str, Any]:
     """Write latest CSV, latest JSON, and index HTML to ``output_dir``."""
 
@@ -127,6 +144,8 @@ def build_site(
         df,
         include_foreign=include_foreign,
         foreign_fallback=foreign_fallback,
+        foreign_continent_min_actas=foreign_continent_min_actas,
+        foreign_continent_min_countries=foreign_continent_min_countries,
         print_output=False,
     )
     latest_csv = data_dir / "latest.csv"
@@ -138,6 +157,8 @@ def build_site(
         max_level=max_level,
         include_foreign=include_foreign,
         foreign_fallback=foreign_fallback,
+        foreign_continent_min_actas=foreign_continent_min_actas,
+        foreign_continent_min_countries=foreign_continent_min_countries,
     )
 
     latest_json = data_dir / "latest.json"
@@ -162,11 +183,14 @@ def build_payload(
     max_level: str,
     include_foreign: bool,
     foreign_fallback: str,
+    foreign_continent_min_actas: int = 10,
+    foreign_continent_min_countries: int = 2,
 ) -> dict[str, Any]:
     """Build a JSON-serializable dashboard payload."""
 
     national = _first_row(df, "eleccion")
-    peru = _first_row(df, "ambito_geografico")
+    peru = _scope_row(df, 1, "ambito_geografico")
+    status_totals = national if include_foreign and not national.empty else peru
     snapshot_ts = str(df["snapshot_ts"].dropna().iloc[0])
     scrape_dt = _parse_snapshot_ts(snapshot_ts)
     onpe_updated_at = _onpe_updated_at(national)
@@ -186,11 +210,13 @@ def build_payload(
             "projected_margin_sanchez_minus_keiko"
         ],
         "projected_winner": projection["projected_winner"],
-        "actas_contabilizadas_pct": _value(peru, "actas_contabilizadas_pct"),
-        "actas_contabilizadas": _value(peru, "actas_contabilizadas"),
-        "total_actas": _value(peru, "total_actas"),
-        "actas_pendientes_jee": _value(peru, "actas_pendientes_jee"),
-        "actas_enviadas_jee": _value(peru, "actas_enviadas_jee"),
+        "actas_contabilizadas_pct": _value(
+            status_totals, "actas_contabilizadas_pct"
+        ),
+        "actas_contabilizadas": _value(status_totals, "actas_contabilizadas"),
+        "total_actas": _value(status_totals, "total_actas"),
+        "actas_pendientes_jee": _value(status_totals, "actas_pendientes_jee"),
+        "actas_enviadas_jee": _value(status_totals, "actas_enviadas_jee"),
         "total_missing_actas": projection["total_missing_actas"],
         "projected_missing_valid_votes": projection["projected_missing_valid_votes"],
     }
@@ -206,9 +232,17 @@ def build_payload(
             "max_level": max_level,
             "include_foreign": include_foreign,
             "foreign_fallback": foreign_fallback,
+            "foreign_continent_min_actas": foreign_continent_min_actas,
+            "foreign_continent_min_countries": foreign_continent_min_countries,
             "latest_csv": "data/latest.csv",
             "latest_json": "data/latest.json",
-            "foreign_note": _foreign_note(include_foreign, df),
+            "foreign_note": _foreign_note(
+                include_foreign,
+                foreign_fallback,
+                projection,
+                foreign_continent_min_actas,
+                foreign_continent_min_countries,
+            ),
         },
         "summary": summary,
         "projection": {
@@ -218,6 +252,9 @@ def build_payload(
         },
         "top_missing_provinces": _top_missing_records(projection),
         "department_table": _department_records(df),
+        "foreign_summary": _foreign_summary(df, projection),
+        "foreign_continents": _foreign_continent_records(df),
+        "foreign_countries": _foreign_country_records(projection),
         "methodology": {
             "title": "Metodología en simple",
             "bullets": [
@@ -225,6 +262,9 @@ def build_payload(
                 "Miramos provincia por provincia porque las actas no llegan al mismo ritmo en todo el país.",
                 "Para las actas faltantes de una provincia, asumimos que se parecen a las actas ya contabilizadas en esa misma provincia.",
                 "Si una provincia aún no tiene datos suficientes, usamos un nivel más agregado como respaldo.",
+                "El voto extranjero ya forma parte de la proyección cuando se activa: cada país usa primero sus propios resultados.",
+                "Un país en cero solo usa el patrón de su continente cuando ya hay suficientes actas y varios países con datos.",
+                "Si un continente todavía no tiene señal suficiente, dejamos sus actas sin proyectar en vez de inventar votos.",
                 "Las actas enviadas al JEE o pendientes pueden cambiar el resultado cuando se resuelvan.",
             ],
         },
@@ -315,14 +355,17 @@ def render_html(payload: dict[str, Any]) -> str:
     .plot {{ min-height: 360px; }}
     .muted {{ color: var(--muted); }}
     .links a {{ color: #bfdbfe; margin-right: 14px; }}
+    .compact-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
     @media (max-width: 920px) {{
       .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+      .compact-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
       .two-col {{ grid-template-columns: 1fr; }}
     }}
     @media (max-width: 560px) {{
       header {{ padding: 24px 16px; }}
       main {{ padding: 18px 12px 36px; }}
       .grid {{ grid-template-columns: 1fr; }}
+      .compact-grid {{ grid-template-columns: 1fr; }}
       .card {{ padding: 14px; border-radius: 14px; }}
       .metric-value {{ font-size: 22px; }}
       .plot {{ min-height: 300px; }}
@@ -353,6 +396,20 @@ def render_html(payload: dict[str, Any]) -> str:
         <p><strong>Actualización ONPE:</strong> <span id="onpe-time"></span></p>
         <p><strong>Próxima actualización aproximada:</strong> <span id="countdown"></span></p>
         <div class="warning" id="foreign-note"></div>
+      </div>
+    </section>
+
+    <section class="section card" id="foreign-section">
+      <h2>Voto extranjero</h2>
+      <p id="foreign-explanation" class="note"></p>
+      <div class="grid compact-grid section" id="foreign-metrics"></div>
+      <div class="section">
+        <h3>Resultados por continente</h3>
+        <div id="foreign-chart" class="plot"></div>
+      </div>
+      <div class="section">
+        <h3>Países por actas pendientes</h3>
+        <div id="foreign-country-table"></div>
       </div>
     </section>
 
@@ -458,6 +515,75 @@ def render_html(payload: dict[str, Any]) -> str:
       ]);
     }}
 
+    function renderForeign() {{
+      const s = DATA.foreign_summary || {{}};
+      const countries = DATA.foreign_countries || [];
+      const continents = DATA.foreign_continents || [];
+      document.getElementById("foreign-explanation").textContent = DATA.metadata.foreign_note;
+      document.getElementById("foreign-metrics").innerHTML = [
+        metric("Keiko extranjero actual", fmtNumber(s.current_keiko_votes), fmtPct(s.current_keiko_pct)),
+        metric("Sánchez extranjero actual", fmtNumber(s.current_sanchez_votes), fmtPct(s.current_sanchez_pct)),
+        metric("Actas extranjeras contabilizadas", fmtPct(s.actas_contabilizadas_pct), `${{fmtNumber(s.actas_contabilizadas)}} de ${{fmtNumber(s.total_actas)}}`),
+        metric("Keiko extranjero proyectado", fmtNumber(s.projected_keiko_votes), "incluido en el total nacional"),
+        metric("Sánchez extranjero proyectado", fmtNumber(s.projected_sanchez_votes), "incluido en el total nacional"),
+        metric("Actas sin proyectar", fmtNumber(s.unprojected_actas), `${{fmtNumber(s.fallback_actas)}} usan fallback continental`),
+      ].join("");
+
+      Plotly.newPlot("foreign-chart", [
+        {{
+          x: continents.map(r => r.departamento_nombre),
+          y: continents.map(r => r.keiko_votes),
+          name: "Keiko actual",
+          type: "bar",
+          marker: {{ color: "#f97316" }},
+          customdata: continents.map(r => r.actas_contabilizadas_pct),
+          hovertemplate: "%{{x}}<br>Keiko: %{{y:,.0f}}<br>Actas: %{{customdata:.2f}}%<extra></extra>"
+        }},
+        {{
+          x: continents.map(r => r.departamento_nombre),
+          y: continents.map(r => r.sanchez_votes),
+          name: "Sánchez actual",
+          type: "bar",
+          marker: {{ color: "#2563eb" }},
+          customdata: continents.map(r => r.actas_contabilizadas_pct),
+          hovertemplate: "%{{x}}<br>Sánchez: %{{y:,.0f}}<br>Actas: %{{customdata:.2f}}%<extra></extra>"
+        }},
+        {{
+          x: continents.map(r => r.departamento_nombre),
+          y: continents.map(r => r.actas_contabilizadas_pct),
+          name: "% actas contabilizadas",
+          type: "scatter",
+          mode: "lines+markers",
+          yaxis: "y2",
+          marker: {{ color: "#0f766e" }},
+          line: {{ color: "#0f766e" }},
+          hovertemplate: "%{{x}}<br>Actas contabilizadas: %{{y:.2f}}%<extra></extra>"
+        }}
+      ], {{
+        barmode: "group",
+        margin: {{ t: 20, r: 55, b: 70, l: 70 }},
+        xaxis: {{ automargin: true }},
+        yaxis2: {{
+          title: "% actas",
+          overlaying: "y",
+          side: "right",
+          range: [0, 100]
+        }}
+      }}, {{ responsive: true, displayModeBar: false }});
+
+      document.getElementById("foreign-country-table").innerHTML = renderTable(countries, [
+        ["País", r => r.provincia_nombre],
+        ["Continente", r => r.departamento_nombre],
+        ["Actas cont.", r => fmtPct(r.actas_contabilizadas_pct)],
+        ["Pendientes", r => fmtNumber(r.missing_actas)],
+        ["Keiko actual", r => fmtNumber(r.current_keiko_votes)],
+        ["Sánchez actual", r => fmtNumber(r.current_sanchez_votes)],
+        ["Keiko proy.", r => fmtNumber(r.projected_keiko_votes)],
+        ["Sánchez proy.", r => fmtNumber(r.projected_sanchez_votes)],
+        ["Respaldo", r => r.foreign_unprojected ? "Sin proyectar" : (r.fallback_level || "País")],
+      ]);
+    }}
+
     function renderTable(rows, columns) {{
       const head = `<thead><tr>${{columns.map(([name]) => `<th>${{name}}</th>`).join("")}}</tr></thead>`;
       const body = `<tbody>${{rows.map(row => `<tr>${{columns.map(([, fn]) => `<td>${{fn(row) ?? "—"}}</td>`).join("")}}</tr>`).join("")}}</tbody>`;
@@ -494,6 +620,7 @@ def render_html(payload: dict[str, Any]) -> str:
     renderVotesChart();
     renderMissing();
     renderDepartments();
+    renderForeign();
     renderText();
     startCountdown();
   </script>
@@ -506,6 +633,10 @@ def _top_missing_records(projection: dict[str, Any]) -> list[dict[str, Any]]:
     units = projection["projection_units"].copy()
     if "provincia_nombre" not in units.columns:
         return []
+    if "ambito_geografico_id" in units.columns:
+        units = units[
+            pd.to_numeric(units["ambito_geografico_id"], errors="coerce") == 1
+        ]
     units = units.sort_values("missing_valid_votes_est", ascending=False).head(20)
     columns = [
         "departamento_nombre",
@@ -521,7 +652,10 @@ def _top_missing_records(projection: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _department_records(df: pd.DataFrame) -> list[dict[str, Any]]:
-    departments = df[df["nivel"] == "departamento"].copy()
+    departments = df[
+        (df["nivel"] == "departamento")
+        & (pd.to_numeric(df["ambito_geografico_id"], errors="coerce") == 1)
+    ].copy()
     if departments.empty:
         return []
     departments = departments.sort_values("departamento_nombre")
@@ -541,8 +675,104 @@ def _department_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     )
 
 
+def _foreign_summary(
+    df: pd.DataFrame, projection: dict[str, Any]
+) -> dict[str, Any]:
+    foreign = _scope_row(df, 2, "ambito_geografico")
+    current_keiko = float(projection.get("foreign_current_keiko_votes", 0) or 0)
+    current_sanchez = float(projection.get("foreign_current_sanchez_votes", 0) or 0)
+    current_total = current_keiko + current_sanchez
+    return {
+        "current_keiko_votes": current_keiko,
+        "current_sanchez_votes": current_sanchez,
+        "current_keiko_pct": _percent(current_keiko, current_total),
+        "current_sanchez_pct": _percent(current_sanchez, current_total),
+        "projected_keiko_votes": projection.get("foreign_projected_keiko_votes", 0),
+        "projected_sanchez_votes": projection.get(
+            "foreign_projected_sanchez_votes", 0
+        ),
+        "actas_contabilizadas_pct": _value(
+            foreign, "actas_contabilizadas_pct"
+        ),
+        "actas_contabilizadas": _value(foreign, "actas_contabilizadas"),
+        "total_actas": _value(foreign, "total_actas"),
+        "fallback_actas": projection.get("foreign_fallback_actas", 0),
+        "unprojected_actas": projection.get("foreign_unprojected_actas", 0),
+        "eligible_continents": projection.get("foreign_eligible_continents", []),
+    }
+
+
+def _foreign_continent_records(df: pd.DataFrame) -> list[dict[str, Any]]:
+    continents = df[
+        (df["nivel"] == "departamento")
+        & (pd.to_numeric(df["ambito_geografico_id"], errors="coerce") == 2)
+    ].copy()
+    if continents.empty:
+        return []
+    continents = continents.sort_values("departamento_nombre")
+    columns = [
+        "departamento_ubigeo",
+        "departamento_nombre",
+        "keiko_votes",
+        "sanchez_votes",
+        "total_votos_validos",
+        "actas_contabilizadas",
+        "total_actas",
+        "actas_contabilizadas_pct",
+    ]
+    return continents[
+        [column for column in columns if column in continents.columns]
+    ].to_dict(orient="records")
+
+
+def _foreign_country_records(projection: dict[str, Any]) -> list[dict[str, Any]]:
+    units = projection["projection_units"].copy()
+    if "ambito_geografico_id" not in units.columns:
+        return []
+    countries = units[
+        (pd.to_numeric(units["ambito_geografico_id"], errors="coerce") == 2)
+        & (units["nivel"] == "provincia")
+    ].copy()
+    if countries.empty:
+        return []
+    counted = pd.to_numeric(countries["actas_contabilizadas"], errors="coerce")
+    total = pd.to_numeric(countries["total_actas"], errors="coerce")
+    countries["actas_contabilizadas_pct"] = (
+        100 * counted.div(total.where(total > 0))
+    )
+    countries = countries.sort_values("missing_actas", ascending=False)
+    columns = [
+        "departamento_nombre",
+        "provincia_nombre",
+        "actas_contabilizadas",
+        "total_actas",
+        "actas_contabilizadas_pct",
+        "missing_actas",
+        "current_keiko_votes",
+        "current_sanchez_votes",
+        "projected_keiko_votes",
+        "projected_sanchez_votes",
+        "used_fallback",
+        "fallback_level",
+        "foreign_unprojected",
+    ]
+    return countries[
+        [column for column in columns if column in countries.columns]
+    ].to_dict(orient="records")
+
+
 def _first_row(df: pd.DataFrame, nivel: str) -> pd.Series:
     rows = df[df["nivel"] == nivel]
+    if rows.empty:
+        return pd.Series(dtype=object)
+    return rows.iloc[0]
+
+
+def _scope_row(df: pd.DataFrame, ambito_id: int, nivel: str) -> pd.Series:
+    rows = df[
+        (df["nivel"] == nivel)
+        & (pd.to_numeric(df["ambito_geografico_id"], errors="coerce") == ambito_id)
+    ]
     if rows.empty:
         return pd.Series(dtype=object)
     return rows.iloc[0]
@@ -567,19 +797,43 @@ def _onpe_updated_at(row: pd.Series) -> datetime | None:
     return datetime.fromtimestamp(float(value) / 1000, timezone.utc)
 
 
-def _foreign_note(include_foreign: bool, df: pd.DataFrame) -> str:
+def _foreign_note(
+    include_foreign: bool,
+    foreign_fallback: str,
+    projection: dict[str, Any],
+    min_actas: int,
+    min_countries: int,
+) -> str:
     if not include_foreign:
         return FOREIGN_NOTE_DEFAULT
-    foreign = df[df.get("ambito_geografico_id") == 2]
-    if foreign.empty:
-        return FOREIGN_NOTE_DEFAULT
-    counted = pd.to_numeric(foreign.get("actas_contabilizadas"), errors="coerce").fillna(0).sum()
-    if counted <= 0:
-        return FOREIGN_NOTE_DEFAULT
+    unprojected = float(projection.get("foreign_unprojected_actas", 0) or 0)
+    eligible = projection.get("foreign_eligible_continents", [])
+    eligible_text = ", ".join(eligible) if eligible else "ninguno todavía"
+    if foreign_fallback == "continent":
+        return (
+            "El voto extranjero ya forma parte de la proyección con una política "
+            "continental conservadora. Cada país usa primero sus propios resultados; "
+            "un país en cero solo usa su continente si este suma al menos "
+            f"{min_actas} actas contabilizadas y datos de {min_countries} países. "
+            f"Continentes elegibles: {eligible_text}. Quedan {unprojected:,.0f} "
+            "actas extranjeras sin proyectar."
+        )
+    if foreign_fallback == "none":
+        return (
+            "El voto extranjero contabilizado ya forma parte del total, pero los "
+            f"países todavía en cero quedan sin proyectar. Quedan {unprojected:,.0f} "
+            "actas extranjeras sin proyectar."
+        )
     return (
-        "El scrape incluye extranjero porque ya hay actas contabilizadas o el "
-        "usuario lo activó explícitamente."
+        "El voto extranjero contabilizado y su proyección forman parte del total "
+        f"nacional. Quedan {unprojected:,.0f} actas extranjeras sin proyectar."
     )
+
+
+def _percent(value: float, total: float) -> float | None:
+    if total <= 0:
+        return None
+    return 100 * value / total
 
 
 def to_jsonable(value: Any) -> Any:

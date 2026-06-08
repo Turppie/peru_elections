@@ -40,7 +40,7 @@ jobs:
 
       - name: Build static dashboard
         run: |
-          python src/build_site.py --max-level provincia --output-dir site --foreign-fallback none
+          python src/build_site.py --max-level provincia --output-dir site --include-foreign --foreign-fallback continent
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

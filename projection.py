@@ -25,6 +25,8 @@ def project_results(
     df: pd.DataFrame,
     include_foreign: bool = True,
     foreign_fallback: str = "none",
+    foreign_continent_min_actas: int = 10,
+    foreign_continent_min_countries: int = 2,
     print_output: bool = True,
 ) -> dict[str, Any]:
     """Project final national result from the finest available geography."""
@@ -33,6 +35,8 @@ def project_results(
         df,
         include_foreign=include_foreign,
         foreign_fallback=foreign_fallback,
+        foreign_continent_min_actas=foreign_continent_min_actas,
+        foreign_continent_min_countries=foreign_continent_min_countries,
     )
 
     current_keiko = float(prepared["current_keiko_votes"].sum())
@@ -40,6 +44,8 @@ def project_results(
     projected_keiko = float(prepared["projected_keiko_votes"].sum())
     projected_sanchez = float(prepared["projected_sanchez_votes"].sum())
     projected_total = projected_keiko + projected_sanchez
+    foreign = prepared[prepared["ambito_geografico_id"] == 2]
+    foreign_fallback_rows = foreign[foreign["used_fallback"]]
 
     top_missing = prepared.sort_values(
         "missing_valid_votes_est", ascending=False
@@ -63,6 +69,22 @@ def project_results(
         "rows_with_fallback": int(prepared["used_fallback"].sum()),
         "foreign_unprojected_actas": float(
             prepared.loc[prepared["foreign_unprojected"], "missing_actas"].sum()
+        ),
+        "foreign_current_keiko_votes": float(foreign["current_keiko_votes"].sum()),
+        "foreign_current_sanchez_votes": float(
+            foreign["current_sanchez_votes"].sum()
+        ),
+        "foreign_projected_keiko_votes": float(
+            foreign["projected_keiko_votes"].sum()
+        ),
+        "foreign_projected_sanchez_votes": float(
+            foreign["projected_sanchez_votes"].sum()
+        ),
+        "foreign_fallback_actas": float(foreign_fallback_rows["missing_actas"].sum()),
+        "foreign_eligible_continents": sorted(
+            foreign.loc[
+                foreign["continent_eligible"], "departamento_nombre"
+            ].dropna().unique().tolist()
         ),
         "top_missing_units": top_missing[
             [
@@ -90,6 +112,8 @@ def bootstrap_projection(
     seed: int = 42,
     include_foreign: bool = True,
     foreign_fallback: str = "none",
+    foreign_continent_min_actas: int = 10,
+    foreign_continent_min_countries: int = 2,
     return_simulations: bool = False,
 ) -> dict[str, Any]:
     """Bootstrap projected margin using beta shares by geography."""
@@ -101,6 +125,8 @@ def bootstrap_projection(
         df,
         include_foreign=include_foreign,
         foreign_fallback=foreign_fallback,
+        foreign_continent_min_actas=foreign_continent_min_actas,
+        foreign_continent_min_countries=foreign_continent_min_countries,
     )
     rng = np.random.default_rng(seed)
 
@@ -141,21 +167,37 @@ def _prepare_projection_units(
     *,
     include_foreign: bool,
     foreign_fallback: str,
+    foreign_continent_min_actas: int,
+    foreign_continent_min_countries: int,
 ) -> pd.DataFrame:
-    if foreign_fallback not in {"none", "national", "manual"}:
-        raise ValueError("foreign_fallback must be one of: none, national, manual")
+    if foreign_fallback not in {"none", "continent", "national", "manual"}:
+        raise ValueError(
+            "foreign_fallback must be one of: none, continent, national, manual"
+        )
     if foreign_fallback == "manual":
         raise ValueError(
             "foreign_fallback='manual' is reserved; manual inputs are not implemented."
         )
+    if foreign_continent_min_actas < 1 or foreign_continent_min_countries < 1:
+        raise ValueError("Foreign continent thresholds must be positive")
 
     working = _coerce_numeric(df.copy())
     selected = _select_projection_units(working, include_foreign=include_foreign)
-    foreign_all_zero = _foreign_scope_is_zero(working)
 
     records: list[dict[str, Any]] = []
     for _, unit in selected.iterrows():
         ambito_id = _safe_int(unit.get("ambito_geografico_id"))
+        continent_fallback = (
+            _find_continent_fallback(
+                working,
+                unit,
+                min_actas=foreign_continent_min_actas,
+                min_countries=foreign_continent_min_countries,
+            )
+            if ambito_id == 2
+            else None
+        )
+        continent_eligible = continent_fallback is not None
         counted = _num(unit.get("actas_contabilizadas"))
         total_actas = _num(unit.get("total_actas"))
         valid_votes = _num(unit.get("total_votos_validos"))
@@ -184,12 +226,21 @@ def _prepare_projection_units(
                 keiko_alpha = keiko_votes + 1.0
                 sanchez_alpha = sanchez_votes + 1.0
             else:
-                if (
-                    ambito_id == 2
-                    and foreign_fallback == "none"
-                    and foreign_all_zero
-                ):
+                if ambito_id == 2 and foreign_fallback == "none":
                     foreign_unprojected = True
+                elif ambito_id == 2 and foreign_fallback == "continent":
+                    if continent_fallback is not None:
+                        used_fallback = True
+                        fallback_level = continent_fallback.level
+                        missing_valid = (
+                            missing_actas * continent_fallback.valid_votes_per_acta
+                        )
+                        share_keiko = continent_fallback.keiko_share
+                        share_sanchez = continent_fallback.sanchez_share
+                        keiko_alpha = continent_fallback.keiko_alpha
+                        sanchez_alpha = continent_fallback.sanchez_alpha
+                    else:
+                        foreign_unprojected = True
                 else:
                     fallback = _find_fallback(working, unit)
                     if fallback is not None:
@@ -220,6 +271,7 @@ def _prepare_projection_units(
                 "used_fallback": used_fallback,
                 "fallback_level": fallback_level,
                 "foreign_unprojected": foreign_unprojected,
+                "continent_eligible": continent_eligible,
                 "keiko_alpha": keiko_alpha,
                 "sanchez_alpha": sanchez_alpha,
             }
@@ -227,6 +279,71 @@ def _prepare_projection_units(
         records.append(record)
 
     return pd.DataFrame(records)
+
+
+def _find_continent_fallback(
+    df: pd.DataFrame,
+    unit: pd.Series,
+    *,
+    min_actas: int,
+    min_countries: int,
+) -> Fallback | None:
+    """Return a continent fallback only when it has enough foreign-country signal."""
+
+    if _safe_int(unit.get("ambito_geografico_id")) != 2:
+        return None
+    department = unit.get("departamento_ubigeo")
+    if department is None or pd.isna(department):
+        return None
+
+    continent_rows = df[
+        (df["nivel"] == "departamento")
+        & (df["ambito_geografico_id"] == 2)
+        & (df["departamento_ubigeo"] == department)
+    ]
+    if continent_rows.empty:
+        return None
+
+    continent = continent_rows.iloc[0]
+    counted = _num(continent.get("actas_contabilizadas"))
+    valid = _num(continent.get("total_votos_validos"))
+    keiko = _num(continent.get("keiko_votes"))
+    sanchez = _num(continent.get("sanchez_votes"))
+    vote_sum = keiko + sanchez
+
+    country_rows = df[
+        (df["nivel"] == "provincia")
+        & (df["ambito_geografico_id"] == 2)
+        & (df["departamento_ubigeo"] == department)
+    ]
+    countries_with_signal = 0
+    for _, country in country_rows.iterrows():
+        if (
+            _num(country.get("actas_contabilizadas")) > 0
+            and _num(country.get("total_votos_validos")) > 0
+            and (
+                _num(country.get("keiko_votes"))
+                + _num(country.get("sanchez_votes"))
+            )
+            > 0
+        ):
+            countries_with_signal += 1
+
+    if (
+        counted < min_actas
+        or countries_with_signal < min_countries
+        or valid <= 0
+        or vote_sum <= 0
+    ):
+        return None
+    return Fallback(
+        level="continente",
+        keiko_share=keiko / vote_sum,
+        sanchez_share=sanchez / vote_sum,
+        valid_votes_per_acta=valid / counted,
+        keiko_alpha=keiko + 1.0,
+        sanchez_alpha=sanchez + 1.0,
+    )
 
 
 def _select_projection_units(df: pd.DataFrame, *, include_foreign: bool) -> pd.DataFrame:
@@ -244,7 +361,11 @@ def _select_projection_units(df: pd.DataFrame, *, include_foreign: bool) -> pd.D
             if not include_foreign and int(float(ambito_id)) == 2:
                 continue
             ambito_df = scoped[scoped["ambito_geografico_id"] == ambito_id]
-            level = _finest_level(ambito_df)
+            level = (
+                _finest_foreign_level(ambito_df)
+                if int(float(ambito_id)) == 2
+                else _finest_level(ambito_df)
+            )
             if level is not None:
                 selected_parts.append(ambito_df[ambito_df["nivel"] == level])
     else:
@@ -268,22 +389,11 @@ def _finest_level(df: pd.DataFrame) -> str | None:
     return None
 
 
-def _foreign_scope_is_zero(df: pd.DataFrame) -> bool:
-    if "ambito_geografico_id" not in df.columns:
-        return False
-    foreign = df[df["ambito_geografico_id"] == 2]
-    if foreign.empty:
-        return False
-    ambito = foreign[foreign["nivel"] == "ambito_geografico"]
-    if not ambito.empty:
-        row = ambito.iloc[0]
-        return _num(row.get("actas_contabilizadas")) == 0 and _num(
-            row.get("total_votos_validos")
-        ) == 0
-    return (
-        foreign["actas_contabilizadas"].fillna(0).sum() == 0
-        and foreign["total_votos_validos"].fillna(0).sum() == 0
-    )
+def _finest_foreign_level(df: pd.DataFrame) -> str | None:
+    for level in ["provincia", "departamento", "ambito_geografico"]:
+        if not df[df["nivel"] == level].empty:
+            return level
+    return None
 
 
 def _find_fallback(df: pd.DataFrame, unit: pd.Series) -> Fallback | None:
@@ -402,6 +512,12 @@ def _print_projection(result: dict[str, Any]) -> None:
         "projected_missing_valid_votes",
         "rows_with_fallback",
         "foreign_unprojected_actas",
+        "foreign_fallback_actas",
+        "foreign_current_keiko_votes",
+        "foreign_current_sanchez_votes",
+        "foreign_projected_keiko_votes",
+        "foreign_projected_sanchez_votes",
+        "foreign_eligible_continents",
     ]
     for field in fields:
         print(f"- {field}: {result[field]}")
