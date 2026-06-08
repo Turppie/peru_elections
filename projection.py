@@ -25,6 +25,7 @@ def project_results(
     df: pd.DataFrame,
     include_foreign: bool = True,
     foreign_fallback: str = "none",
+    print_output: bool = True,
 ) -> dict[str, Any]:
     """Project final national result from the finest available geography."""
 
@@ -78,7 +79,8 @@ def project_results(
         ].reset_index(drop=True),
         "projection_units": prepared,
     }
-    _print_projection(result)
+    if print_output:
+        _print_projection(result)
     return result
 
 

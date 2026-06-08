@@ -1,13 +1,139 @@
 # Mini Proyector Electoral ONPE Peru 2026
 
-Proyecto Python para descargar resultados publicos de ONPE por ambito geografico
-y construir una proyeccion nacional de la segunda vuelta presidencial 2026 entre
-Keiko Fujimori y Roberto Sanchez.
+Proyecto Python para descargar resultados publicos de ONPE, calcular una
+proyeccion electoral provincial y publicar un dashboard estatico en GitHub
+Pages. No usa Streamlit y no requiere secrets.
 
-La web oficial muestra resultados por region, provincia, distrito y extranjero:
-<https://segundavuelta.onpe.gob.pe/>.
+El entrypoint principal para produccion es:
 
-## Endpoints usados
+```bash
+python src/build_site.py
+```
+
+## Que genera
+
+`src/build_site.py` scrapea ONPE, calcula la proyeccion y escribe:
+
+- `site/index.html`: dashboard estatico con HTML + Plotly
+- `site/data/latest.json`: payload listo para consumo web
+- `site/data/latest.csv`: dataset geografico mas reciente
+
+Por defecto:
+
+- scrapea Peru, no extranjero
+- usa `--max-level provincia`
+- usa `--foreign-fallback none`
+- corre bootstrap con 5000 simulaciones
+
+## Uso local
+
+Instala dependencias:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Si tu shell no tiene `python`, usa `python3` o el ejecutable del entorno virtual:
+
+```bash
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+Construir el dashboard:
+
+```bash
+.venv/bin/python src/build_site.py --max-level provincia --output-dir site --foreign-fallback none
+```
+
+Si ONPE/CloudFront devuelve HTML en vez de JSON durante un scrape largo, sube
+pausa y reintentos:
+
+```bash
+.venv/bin/python src/build_site.py --max-level provincia --output-dir site --sleep 0.3 --non-json-retries 8
+```
+
+Luego abre `site/index.html` o sirve la carpeta:
+
+```bash
+python3 -m http.server 8000 --directory site
+```
+
+## Dashboard
+
+El dashboard muestra:
+
+- votos actuales Keiko/Sanchez
+- votos proyectados Keiko/Sanchez
+- margen actual y proyectado
+- porcentaje de actas contabilizadas
+- actas pendientes y actas enviadas JEE
+- top 20 provincias con mas votos faltantes estimados
+- tabla por departamento
+- proyeccion alternativa con bootstrap
+- metodologia simple y disclaimer
+
+Tambien muestra una nota visible: no se incluyen votos del extranjero por
+defecto porque sus actas aun no han sido contabilizadas; el modelo no inventa
+votos para ese ambito.
+
+## Metodologia en simple
+
+No extrapolamos el resultado nacional directamente, porque las actas no llegan
+al mismo ritmo en todo el pais. Miramos provincia por provincia.
+
+Para las actas faltantes de una provincia, asumimos que se parecen a las actas
+ya contabilizadas en esa misma provincia. Si una provincia aun no tiene datos
+suficientes, usamos un nivel mas agregado como respaldo.
+
+El bootstrap es una proyeccion alternativa: simula miles de escenarios donde las
+actas faltantes pueden moverse un poco alrededor del patron observado. No
+predice el futuro; muestra que tan sensible es la proyeccion.
+
+Esto no es resultado oficial, no reemplaza a ONPE y no es recomendacion de
+apuestas.
+
+## GitHub Pages con GitHub Actions
+
+El workflow esta en:
+
+```text
+.github/workflows/update-dashboard.yml
+```
+
+Corre:
+
+- cada 10 minutos con `cron: "*/10 * * * *"`
+- manualmente con `workflow_dispatch`
+
+El workflow:
+
+1. instala Python 3.11
+2. instala `requirements.txt`
+3. ejecuta:
+
+```bash
+python src/build_site.py --max-level provincia --output-dir site --foreign-fallback none
+```
+
+4. despliega `site/` con:
+
+- `actions/configure-pages`
+- `actions/upload-pages-artifact`
+- `actions/deploy-pages`
+
+### Activar Pages
+
+En GitHub:
+
+1. Ve a `Settings`.
+2. Entra a `Pages`.
+3. En `Build and deployment`, elige `Source: GitHub Actions`.
+4. Ve a `Actions`.
+5. Ejecuta manualmente `Update dashboard` o espera el cron.
+
+No necesitas configurar secrets.
+
+## Endpoints ONPE
 
 Base:
 
@@ -40,119 +166,18 @@ divide el resumen entre Peru y extranjero. Los resumenes por geografia usan
 Aunque ONPE pueda devolver ubigeos como enteros sin cero inicial, los requests
 usan el string original, por ejemplo `010000`.
 
-## Uso
+## CLI historico
 
-Instala dependencias:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-Si tu shell no tiene el comando `python`, usa `python3` o el ejecutable de tu
-entorno virtual, por ejemplo `.venv/bin/python`.
-
-Scraping de Peru:
+El CLI anterior sigue disponible:
 
 ```bash
-python main.py --scrape
+.venv/bin/python main.py --scrape --max-level provincia
+.venv/bin/python main.py --project --input-csv data/onpe_resumen_geografico_YYYYMMDD_HHMMSS.csv
 ```
-
-Scraping de Peru y extranjero:
-
-```bash
-python main.py --scrape --include-foreign
-```
-
-Scraping completo con pausa corta y JSON crudo:
-
-```bash
-python main.py --scrape --max-level distrito --sleep 0.1 --save-raw-json
-```
-
-Si durante un scrape largo ONPE/CloudFront devuelve HTML en lugar de JSON,
-sube la pausa y los reintentos:
-
-```bash
-python main.py --scrape --max-level distrito --sleep 0.3 --non-json-retries 8
-```
-
-Si ONPE cambia la ruta del backend, puedes probar otra base sin editar codigo:
-
-```bash
-python main.py --scrape --base-url https://NUEVA_BASE_ONPE
-```
-
-Proyeccion desde un snapshot:
-
-```bash
-python main.py --project --input-csv data/onpe_resumen_geografico_YYYYMMDD_HHMMSS.csv
-```
-
-Proyeccion con bootstrap:
-
-```bash
-python main.py --project --input-csv data/onpe_resumen_geografico_YYYYMMDD_HHMMSS.csv --bootstrap 5000
-```
-
-Politica de extranjero:
-
-```bash
-python main.py --project --input-csv data/onpe_resumen_geografico_YYYYMMDD_HHMMSS.csv --foreign-fallback none
-```
-
-Los CSV se guardan en `data/`. Si activas `--save-raw-json`, cada respuesta
-cruda se guarda en `raw/`.
-
-## Error: `Response is not JSON`
-
-Si ves que el `content-type` es `text/html` y el texto empieza con
-`<!doctype html>`, ONPE no esta devolviendo el API sino la app web. En ese caso
-no es un problema del parser: el backend usado por el sitio puede estar caido,
-haber cambiado de ruta, o estar sirviendo fallback del frontend. Reintenta mas
-tarde, sube `--sleep`/`--non-json-retries`, o usa `--base-url` si encuentras la
-nueva base del API.
-
-## Logica de proyeccion
-
-La proyeccion no extrapola el nacional directamente, porque el orden de llegada
-de actas suele estar sesgado geograficamente.
-
-La proyeccion base usa el nivel mas fino disponible por ambito, normalmente
-distrito. Para cada distrito con actas contabilizadas, estima votos validos
-faltantes por acta y reparte esos votos segun el patron actual del mismo
-distrito.
-
-Si una unidad tiene 0 actas contabilizadas o 0 votos validos, usa fallback con
-filas agregadas ya scrapeadas: provincia, departamento, ambito geografico y
-nacional. Para extranjero, si todo el ambito esta en 0 votos y 0 actas
-contabilizadas, `foreign_fallback=none` no inventa votos y reporta
-`foreign_unprojected_actas`.
-
-`foreign_fallback=manual` esta reservado: el CLI acepta el valor, pero falla con
-un mensaje claro hasta que se definan inputs manuales.
-
-## Validaciones
-
-`validate_dataset(df)` marca y resume:
-
-- diferencias entre `keiko_votes + sanchez_votes` y `total_votos_validos`
-- filas con `total_votos_validos = 0`
-- filas con `actas_contabilizadas = 0`
-- filas con `total_actas` nulo
-- filas con `total_actas < actas_contabilizadas`
-- participantes vacios
 
 ## Tests
 
 ```bash
-python -m unittest discover -s tests
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m py_compile main.py onpe_client.py scraper.py projection.py src/build_site.py
 ```
-
-Los tests no usan red. Cubren el builder de parametros, parser de participantes
-y un smoke test de proyeccion con fallback y extranjero no proyectado.
-
-## Advertencias
-
-Esto no es resultado oficial ni recomendacion de apuestas. Las actas enviadas al
-JEE, observadas o pendientes pueden cambiar el resultado. Usa siempre los datos
-oficiales de ONPE como fuente final.

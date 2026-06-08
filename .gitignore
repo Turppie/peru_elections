@@ -11,3 +11,5 @@ __pycache__/
 !/data/.gitkeep
 /raw/*.json
 !/raw/.gitkeep
+
+/site/

@@ -180,6 +180,7 @@ def scrape_geography(
     include_foreign: bool = True,
     max_level: str = "distrito",
     output_dir: str | Path = "data",
+    save_snapshot: bool = True,
 ) -> pd.DataFrame:
     """Scrape national, scope, and geographic ONPE summaries into a snapshot CSV."""
 
@@ -295,11 +296,12 @@ def scrape_geography(
 
     validate_dataset(df)
 
-    output_path = Path(output_dir) / f"onpe_resumen_geografico_{snapshot_ts}.csv"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_path, index=False)
-    df.attrs["output_path"] = str(output_path)
-    LOGGER.info("Saved snapshot CSV: %s", output_path)
+    if save_snapshot:
+        output_path = Path(output_dir) / f"onpe_resumen_geografico_{snapshot_ts}.csv"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(output_path, index=False)
+        df.attrs["output_path"] = str(output_path)
+        LOGGER.info("Saved snapshot CSV: %s", output_path)
     return df
 
 

@@ -93,7 +93,12 @@ class ProjectionSmokeTest(unittest.TestCase):
             ]
         )
 
-        result = project_results(df, include_foreign=True, foreign_fallback="none")
+        result = project_results(
+            df,
+            include_foreign=True,
+            foreign_fallback="none",
+            print_output=False,
+        )
 
         self.assertEqual(result["current_keiko_votes"], 600.0)
         self.assertEqual(result["current_sanchez_votes"], 400.0)
@@ -109,6 +114,7 @@ class ProjectionSmokeTest(unittest.TestCase):
             project_results(
                 pd.DataFrame([_row(nivel="eleccion", ambito=None)]),
                 foreign_fallback="manual",
+                print_output=False,
             )
 
 
